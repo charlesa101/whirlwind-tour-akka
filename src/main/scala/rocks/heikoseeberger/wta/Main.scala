@@ -30,7 +30,7 @@ object Main extends Logging {
 
   private final case class TopLevelActorTerminated(actor: ActorRef[Nothing]) extends Reason
 
-  final case class Config()
+  final case class Config(api: Api.Config)
 
   def main(args: Array[String]): Unit = {
     sys.props += "log4j2.contextSelector" -> classOf[AsyncLoggerContextSelector].getName
@@ -47,6 +47,8 @@ object Main extends Logging {
       implicit mat: Materializer
   ): Behavior[Nothing] =
     Actor.deferred[Nothing] { context =>
+      val api = context.spawn(Api(config.api), Api.Name)
+      context.watch(api)
       logger.info(s"${context.system.name} up and running")
 
       Actor.onSignal[Nothing] {
