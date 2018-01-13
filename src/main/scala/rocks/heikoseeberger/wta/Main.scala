@@ -17,12 +17,20 @@
 package rocks.heikoseeberger.wta
 
 import akka.actor.{ Actor, ActorLogging, ActorSystem, Props, Terminated }
+import akka.stream.{ ActorMaterializer, Materializer }
 import org.apache.logging.log4j.core.async.AsyncLoggerContextSelector
 import pureconfig.loadConfigOrThrow
 
 object Main {
 
   final class Root(config: Config) extends Actor with ActorLogging {
+    import akka.actor.typed.scaladsl.adapter._
+
+    private implicit val mat: Materializer = ActorMaterializer()
+
+    private val api = context.spawn(Api(config.api), Api.Name)
+
+    context.watch(api)
 
     log.info(s"${context.system.name} up and running")
 
@@ -33,7 +41,7 @@ object Main {
     }
   }
 
-  final case class Config()
+  final case class Config(api: Api.Config)
 
   def main(args: Array[String]): Unit = {
     sys.props += "log4j2.contextSelector" -> classOf[AsyncLoggerContextSelector].getName
