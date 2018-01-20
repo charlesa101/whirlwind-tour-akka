@@ -47,8 +47,12 @@ object Main extends Logging {
       implicit mat: Materializer
   ): Behavior[Nothing] =
     Actor.deferred[Nothing] { context =>
-      val api = context.spawn(Api(config.api), Api.Name)
+      val userRepository = context.spawn(UserRepository(), UserRepository.Name)
+      context.watch(userRepository)
+
+      val api = context.spawn(Api(config.api, userRepository), Api.Name)
       context.watch(api)
+
       logger.info(s"${context.system.name} up and running")
 
       Actor.onSignal[Nothing] {

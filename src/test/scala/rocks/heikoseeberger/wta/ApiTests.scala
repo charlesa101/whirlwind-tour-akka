@@ -16,19 +16,30 @@
 
 package rocks.heikoseeberger.wta
 
-import akka.http.scaladsl.model.StatusCodes.OK
+import akka.actor.Scheduler
+import akka.actor.typed.{ ActorSystem => TypedActorSystem }
+import akka.actor.typed.scaladsl.Actor
+import akka.http.scaladsl.model.StatusCodes.{ Conflict, Created, NoContent, NotFound, OK }
 import akka.http.scaladsl.testkit.{ RouteTest, TestFrameworkInterface }
+import akka.util.Timeout
 import de.heikoseeberger.akkahttpcirce.ErrorAccumulatingCirceSupport
 import io.circe.parser.parse
+import scala.concurrent.duration.DurationInt
 import utest._
 
 object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
   import Api._
   import ErrorAccumulatingCirceSupport._
+  import akka.actor.typed.scaladsl.adapter._
 
   override def tests = Tests {
+    implicit val typedSystem: TypedActorSystem[Nothing] = system.toTyped
+    implicit val askTimeout: Timeout                    = 3.seconds
+    implicit val scheduler: Scheduler                   = system.scheduler
+
     'get - {
-      Get() ~> route ~> check {
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      Get() ~> route(userRepository) ~> check {
         val actualStatus = status
         assert(actualStatus == OK)
         val actualContent = responseAs[String]
@@ -37,8 +48,9 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
     }
 
     'postInvalid - {
-      val user = parse("""{ "username": "", "nickname": "" }""")
-      Post("/", user) ~> route ~> check {
+      val user           = parse("""{ "username": "", "nickname": "" }""")
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      Post("/", user) ~> route(userRepository) ~> check {
         val actualRejections = rejections
         assert(actualRejections.nonEmpty)
       }
@@ -46,20 +58,46 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
 
     'post - {
       val user = parse("""{ "username": "username", "nickname": "nickname" }""")
-      Post("/", user) ~> route ~> check {
+      val userRepository = system.spawnAnonymous {
+        Actor.immutablePartial[UserRepository.Command] {
+          case (_, UserRepository.AddUser(user, replyTo)) =>
+            replyTo ! UserRepository.UserAdded(user)
+            Actor.immutablePartial {
+              case (_, UserRepository.AddUser(user, replyTo)) =>
+                replyTo ! UserRepository.UsernameTaken(user.username)
+                Actor.empty
+            }
+        }
+      }
+      Post("/", user) ~> route(userRepository) ~> check {
         val actualStatus = status
-        assert(actualStatus == OK)
-        val actualContent = responseAs[String]
-        assert(actualContent == "POST User(username,nickname) received")
+        assert(actualStatus == Created)
+      }
+      Post("/", user) ~> route(userRepository) ~> check {
+        val actualStatus = status
+        assert(actualStatus == Conflict)
       }
     }
 
     'delete - {
-      Delete("/username") ~> route ~> check {
+      val userRepository = system.spawnAnonymous {
+        Actor.immutablePartial[UserRepository.Command] {
+          case (_, UserRepository.RemoveUser(username, replyTo)) =>
+            replyTo ! UserRepository.UserRemoved(username)
+            Actor.immutablePartial {
+              case (_, UserRepository.RemoveUser(username, replyTo)) =>
+                replyTo ! UserRepository.UsernameUnknown(username)
+                Actor.empty
+            }
+        }
+      }
+      Delete("/username") ~> route(userRepository) ~> check {
         val actualStatus = status
-        assert(actualStatus == OK)
-        val actualContent = responseAs[String]
-        assert(actualContent == s"DELETE username received")
+        assert(actualStatus == NoContent)
+      }
+      Delete("/username") ~> route(userRepository) ~> check {
+        val actualStatus = status
+        assert(actualStatus == NotFound)
       }
     }
   }

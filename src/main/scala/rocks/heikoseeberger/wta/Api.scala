@@ -16,16 +16,20 @@
 
 package rocks.heikoseeberger.wta
 
-import akka.actor.ActorSystem
-import akka.actor.typed.Behavior
+import akka.actor.{ ActorSystem, Scheduler }
+import akka.actor.typed.{ ActorRef, Behavior }
 import akka.actor.typed.scaladsl.Actor
+import akka.actor.typed.scaladsl.AskPattern.Askable
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.Http.ServerBinding
+import akka.http.scaladsl.model.StatusCodes.{ Conflict, Created, NoContent, NotFound }
 import akka.http.scaladsl.server.{ Directives, Route }
 import akka.stream.Materializer
+import akka.util.Timeout
 import de.heikoseeberger.akkahttpcirce.ErrorAccumulatingCirceSupport
 import java.net.InetSocketAddress
 import org.apache.logging.log4j.scala.Logging
+import scala.concurrent.duration.FiniteDuration
 import scala.util.{ Failure, Success }
 
 object Api extends Logging {
@@ -38,11 +42,13 @@ object Api extends Logging {
 
   // Message protocol – end
 
-  final case class Config(address: String, port: Int)
+  final case class Config(address: String, port: Int, askTimeout: FiniteDuration)
 
   final val Name = "api"
 
-  def apply(config: Config)(implicit mat: Materializer): Behavior[Command] =
+  def apply(config: Config, userRepository: ActorRef[UserRepository.Command])(
+      implicit mat: Materializer
+  ): Behavior[Command] =
     Actor.deferred { context =>
       import config._
       import context.executionContext
@@ -54,7 +60,7 @@ object Api extends Logging {
       }
       val self = context.self
       Http()
-        .bindAndHandle(route, address, port)
+        .bindAndHandle(route(userRepository)(askTimeout, context.system.scheduler), address, port)
         .onComplete {
           case Failure(_)                      => self ! HandleBindFailure
           case Success(ServerBinding(address)) => self ! HandleBound(address)
@@ -71,9 +77,11 @@ object Api extends Logging {
       }
     }
 
-  def route: Route = {
+  def route(userRepository: ActorRef[UserRepository.Command])(implicit askTimeout: Timeout,
+                                                              scheduler: Scheduler): Route = {
     import Directives._
     import ErrorAccumulatingCirceSupport._
+    import UserRepository._
     import io.circe.generic.auto._
     import io.circe.refined._
 
@@ -87,16 +95,18 @@ object Api extends Logging {
       } ~
       post {
         entity(as[User]) { user =>
-          complete {
-            s"POST $user received"
+          onSuccess(userRepository ? addUser(user)) {
+            case UsernameTaken(_) => complete(Conflict)
+            case UserAdded(_)     => complete(Created)
           }
         }
       }
     } ~
     path(usernameMatcher) { username =>
       delete {
-        complete {
-          s"DELETE $username received"
+        onSuccess(userRepository ? removeUser(username)) {
+          case UsernameUnknown(_) => complete(NotFound)
+          case UserRemoved(_)     => complete(NoContent)
         }
       }
     }

@@ -16,10 +16,20 @@
 
 package rocks.heikoseeberger
 
+import cats.data.{ NonEmptyList, Validated }
+
 package object wta {
 
   type Traversable[+A] = scala.collection.immutable.Traversable[A]
   type Iterable[+A]    = scala.collection.immutable.Iterable[A]
   type Seq[+A]         = scala.collection.immutable.Seq[A]
   type IndexedSeq[+A]  = scala.collection.immutable.IndexedSeq[A]
+
+  final implicit class ValidatedOps[A, B](val v: Validated[NonEmptyList[A], B]) extends AnyVal {
+    def get: B = v.fold(as => throw new IllegalStateException(as.toList.mkString(", ")), identity)
+  }
+
+  final implicit class EitherOps[A, B](val e: Either[A, B]) extends AnyVal {
+    def get: B = e.fold(a => throw new IllegalStateException(a.toString), identity)
+  }
 }
