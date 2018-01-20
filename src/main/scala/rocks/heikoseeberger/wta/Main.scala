@@ -28,7 +28,9 @@ object Main {
 
     private implicit val mat: Materializer = ActorMaterializer()
 
-    private val api = context.spawn(Api(config.api), Api.Name)
+    private val userRepository = context.spawn(UserRepository(), UserRepository.Name)
+
+    private val api = context.spawn(Api(config.api, userRepository), Api.Name)
 
     context.watch(api)
 

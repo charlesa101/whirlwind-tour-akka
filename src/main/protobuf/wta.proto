@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package rocks.heikoseeberger.wta.proto;
+
+message User {
+    string username = 1;
+    string nickname = 2;
+}

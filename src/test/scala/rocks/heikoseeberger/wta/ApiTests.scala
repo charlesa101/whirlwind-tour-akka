@@ -17,30 +17,28 @@
 package rocks.heikoseeberger.wta
 
 import akka.Done
-import akka.actor.ActorSystem
+import akka.actor.Scheduler
 import akka.actor.typed.scaladsl.Actor
-import akka.actor.typed.{ ActorRef, Behavior, Terminated }
-import akka.http.scaladsl.model.StatusCodes.OK
+import akka.actor.typed.{ ActorRef, Behavior, Terminated, ActorSystem => TypedActorSystem }
+import akka.http.scaladsl.model.StatusCodes.{ Conflict, Created, NoContent, NotFound, OK }
 import akka.http.scaladsl.testkit.{ RouteTest, TestFrameworkInterface }
 import akka.stream.{ ActorMaterializer, Materializer }
 import akka.testkit.typed.scaladsl.TestProbe
+import akka.util.Timeout
 import de.heikoseeberger.akkahttpcirce.ErrorAccumulatingCirceSupport
 import io.circe.parser.parse
-import scala.concurrent.Await
 import scala.concurrent.duration.DurationInt
 import utest._
 
-object ApiTests extends TestSuite {
+object ApiTests extends ActorSystemTests {
   import Api._
   import akka.actor.typed.scaladsl.adapter._
-
-  private implicit val system: ActorSystem = ActorSystem()
 
   private implicit val mat: Materializer = ActorMaterializer()
 
   override def tests = Tests {
     'behavior - {
-      def api   = Api(Config("127.0.0.1", 8001))
+      def api   = Api(Config("127.0.0.1", 8001, 42.seconds), system.deadLetters)
       val probe = TestProbe[Done]()(system.toTyped)
       val test =
         Actor.deferred[Done] { context =>
@@ -66,20 +64,23 @@ object ApiTests extends TestSuite {
       probe.expectMsg(Done)
     }
   }
-
-  override def utestAfterAll() = {
-    Await.ready(system.terminate(), 42.seconds)
-    super.utestAfterAll()
-  }
 }
 
 object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterface {
   import Api._
   import ErrorAccumulatingCirceSupport._
+  import akka.actor.typed.scaladsl.adapter._
+
+  private implicit val typedSystem: TypedActorSystem[Nothing] = system.toTyped
+
+  private implicit val askTimeout: Timeout = 3.seconds
+
+  private implicit val scheduler: Scheduler = system.scheduler
 
   override def tests = Tests {
     'get - {
-      Get() ~> route ~> check {
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      Get() ~> route(userRepository) ~> check {
         val actualStatus = status
         assert(actualStatus == OK)
         val actualContent = responseAs[String]
@@ -88,8 +89,9 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
     }
 
     'postInvalid - {
-      val user = parse("""{ "username": "", "nickname": "" }""")
-      Post("/", user) ~> route ~> check {
+      val user           = parse("""{ "username": "", "nickname": "" }""")
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      Post("/", user) ~> route(userRepository) ~> check {
         val actualRejections = rejections
         assert(actualRejections.nonEmpty)
       }
@@ -97,20 +99,46 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
 
     'post - {
       val user = parse("""{ "username": "username", "nickname": "nickname" }""")
-      Post("/", user) ~> route ~> check {
+      val userRepository = system.spawnAnonymous {
+        Actor.immutablePartial[UserRepository.Command] {
+          case (_, UserRepository.AddUser(user, replyTo)) =>
+            replyTo ! UserRepository.UserAdded(user)
+            Actor.immutablePartial {
+              case (_, UserRepository.AddUser(user, replyTo)) =>
+                replyTo ! UserRepository.UsernameTaken(user.username)
+                Actor.empty
+            }
+        }
+      }
+      Post("/", user) ~> route(userRepository) ~> check {
         val actualStatus = status
-        assert(actualStatus == OK)
-        val actualContent = responseAs[String]
-        assert(actualContent == "POST User(username,nickname) received")
+        assert(actualStatus == Created)
+      }
+      Post("/", user) ~> route(userRepository) ~> check {
+        val actualStatus = status
+        assert(actualStatus == Conflict)
       }
     }
 
     'delete - {
-      Delete("/username") ~> route ~> check {
+      val userRepository = system.spawnAnonymous {
+        Actor.immutablePartial[UserRepository.Command] {
+          case (_, UserRepository.RemoveUser(username, replyTo)) =>
+            replyTo ! UserRepository.UserRemoved(username)
+            Actor.immutablePartial {
+              case (_, UserRepository.RemoveUser(username, replyTo)) =>
+                replyTo ! UserRepository.UsernameUnknown(username)
+                Actor.empty
+            }
+        }
+      }
+      Delete("/username") ~> route(userRepository) ~> check {
         val actualStatus = status
-        assert(actualStatus == OK)
-        val actualContent = responseAs[String]
-        assert(actualContent == s"DELETE username received")
+        assert(actualStatus == NoContent)
+      }
+      Delete("/username") ~> route(userRepository) ~> check {
+        val actualStatus = status
+        assert(actualStatus == NotFound)
       }
     }
   }
