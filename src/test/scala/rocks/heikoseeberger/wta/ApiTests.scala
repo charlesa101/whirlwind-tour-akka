@@ -23,6 +23,7 @@ import akka.http.scaladsl.model.StatusCodes.{ Conflict, Created, NoContent, NotF
 import akka.http.scaladsl.testkit.{ RouteTest, TestFrameworkInterface }
 import akka.util.Timeout
 import de.heikoseeberger.akkahttpcirce.ErrorAccumulatingCirceSupport
+import eu.timepit.refined.auto.autoRefineV
 import io.circe.parser.parse
 import scala.concurrent.duration.DurationInt
 import utest._
@@ -31,6 +32,8 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
   import Api._
   import ErrorAccumulatingCirceSupport._
   import akka.actor.typed.scaladsl.adapter._
+  import io.circe.generic.auto._
+  import io.circe.refined._
 
   override def tests = Tests {
     implicit val typedSystem: TypedActorSystem[Nothing] = system.toTyped
@@ -38,19 +41,27 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
     implicit val scheduler: Scheduler                   = system.scheduler
 
     'get - {
+      val expectedUsers =
+        UserView.Users(Set(User("username": User.Username, "nickname": User.Nickname)))
       val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
-      Get() ~> route(userRepository) ~> check {
+      val userView = system.spawnAnonymous(Actor.immutablePartial[UserView.Command] {
+        case (_, UserView.GetUsers(replyTo)) =>
+          replyTo ! expectedUsers
+          Actor.empty
+      })
+      Get() ~> route(userRepository, userView) ~> check {
         val actualStatus = status
         assert(actualStatus == OK)
-        val actualContent = responseAs[String]
-        assert(actualContent == "GET received")
+        val actualUsers = responseAs[UserView.Users]
+        assert(actualUsers == expectedUsers)
       }
     }
 
     'postInvalid - {
       val user           = parse("""{ "username": "", "nickname": "" }""")
       val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
-      Post("/", user) ~> route(userRepository) ~> check {
+      val userView       = system.spawnAnonymous(Actor.empty[UserView.Command])
+      Post("/", user) ~> route(userRepository, userView) ~> check {
         val actualRejections = rejections
         assert(actualRejections.nonEmpty)
       }
@@ -69,11 +80,12 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
             }
         }
       }
-      Post("/", user) ~> route(userRepository) ~> check {
+      val userView = system.spawnAnonymous(Actor.empty[UserView.Command])
+      Post("/", user) ~> route(userRepository, userView) ~> check {
         val actualStatus = status
         assert(actualStatus == Created)
       }
-      Post("/", user) ~> route(userRepository) ~> check {
+      Post("/", user) ~> route(userRepository, userView) ~> check {
         val actualStatus = status
         assert(actualStatus == Conflict)
       }
@@ -91,11 +103,12 @@ object ApiTests extends TestSuite with RouteTest with TestFrameworkInterface {
             }
         }
       }
-      Delete("/username") ~> route(userRepository) ~> check {
+      val userView = system.spawnAnonymous(Actor.empty[UserView.Command])
+      Delete("/username") ~> route(userRepository, userView) ~> check {
         val actualStatus = status
         assert(actualStatus == NoContent)
       }
-      Delete("/username") ~> route(userRepository) ~> check {
+      Delete("/username") ~> route(userRepository, userView) ~> check {
         val actualStatus = status
         assert(actualStatus == NotFound)
       }
