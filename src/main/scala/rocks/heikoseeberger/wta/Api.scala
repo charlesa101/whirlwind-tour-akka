@@ -42,7 +42,9 @@ object Api extends Logging {
 
   final val Name = "api"
 
-  def apply(config: Config, userRepository: ActorRef[UserRepository.Command])(
+  def apply(config: Config,
+            userRepository: ActorRef[UserRepository.Command],
+            userView: ActorRef[UserView.Command])(
       implicit mat: Materializer
   ): Behavior[Command] = {
     import config._
@@ -57,7 +59,9 @@ object Api extends Logging {
       val self = context.self
 
       Http()
-        .bindAndHandle(route(userRepository)(askTimeout, context.system.scheduler), address, port)
+        .bindAndHandle(route(userRepository, userView)(askTimeout, context.system.scheduler),
+                       address,
+                       port)
         .onComplete {
           case Failure(_)                      => self ! HandleBindFailure
           case Success(ServerBinding(address)) => self ! HandleBound(address)
@@ -75,8 +79,10 @@ object Api extends Logging {
     }
   }
 
-  def route(userRepository: ActorRef[UserRepository.Command])(implicit askTimeout: Timeout,
-                                                              scheduler: Scheduler): Route = {
+  def route(
+      userRepository: ActorRef[UserRepository.Command],
+      userView: ActorRef[UserView.Command]
+  )(implicit askTimeout: Timeout, scheduler: Scheduler): Route = {
     import Directives._
     import ErrorAccumulatingCirceSupport._
     import UserRepository._
@@ -88,7 +94,8 @@ object Api extends Logging {
     pathEndOrSingleSlash {
       get {
         complete {
-          "GET received"
+          import UserView._
+          (userView ? GetUsers).mapTo[Users]
         }
       } ~
       post {

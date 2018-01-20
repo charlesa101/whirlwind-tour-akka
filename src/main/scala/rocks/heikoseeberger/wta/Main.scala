@@ -17,9 +17,14 @@
 package rocks.heikoseeberger.wta
 
 import akka.actor.{ Actor, ActorLogging, ActorSystem, Props, Terminated }
+import akka.actor.typed.SupervisorStrategy.restartWithBackoff
+import akka.actor.typed.scaladsl.Actor.supervise
+import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
+import akka.persistence.query.PersistenceQuery
 import akka.stream.{ ActorMaterializer, Materializer }
 import org.apache.logging.log4j.core.async.AsyncLoggerContextSelector
 import pureconfig.loadConfigOrThrow
+import scala.concurrent.duration.FiniteDuration
 
 object Main {
 
@@ -30,9 +35,27 @@ object Main {
 
     private val userRepository = context.spawn(UserRepository(), UserRepository.Name)
 
-    private val api = context.spawn(Api(config.api, userRepository), Api.Name)
+    private val userView = context.spawn(UserView(), UserView.Name)
+
+    private val userProjection = {
+      val readJournal =
+        PersistenceQuery(context.system)
+          .readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
+      val userProjection =
+        supervise(UserViewProjection(config.userViewProjection, readJournal, userView))
+          .onFailure[UserViewProjection.EventStreamCompleteException](
+            restartWithBackoff(config.userViewProjectionMinBackoff,
+                               config.userViewProjectionMaxBackoff,
+                               0)
+          )
+      context.spawn(userProjection, UserViewProjection.Name)
+    }
+
+    private val api = context.spawn(Api(config.api, userRepository, userView), Api.Name)
 
     context.watch(api)
+    context.watch(userView)
+    context.watch(userProjection)
 
     log.info(s"${context.system.name} up and running")
 
@@ -43,7 +66,10 @@ object Main {
     }
   }
 
-  final case class Config(api: Api.Config)
+  final case class Config(userViewProjectionMinBackoff: FiniteDuration,
+                          userViewProjectionMaxBackoff: FiniteDuration,
+                          api: Api.Config,
+                          userViewProjection: UserViewProjection.Config)
 
   def main(args: Array[String]): Unit = {
     sys.props += "log4j2.contextSelector" -> classOf[AsyncLoggerContextSelector].getName
