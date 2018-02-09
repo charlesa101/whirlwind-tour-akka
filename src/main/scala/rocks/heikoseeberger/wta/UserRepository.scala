@@ -29,19 +29,22 @@ object UserRepository extends Logging {
 
   // Message protocol – start
 
-  sealed trait Command extends Serializable
-  sealed trait Event   extends Serializable
+  sealed trait Command
+  sealed trait SerializableCommand extends Command with Serializable
+  sealed trait Event               extends Serializable
 
-  final case class AddUser(user: User, replyTo: ActorRef[AddUserReply]) extends Command
+  final case class AddUser(user: User, replyTo: ActorRef[AddUserReply]) extends SerializableCommand
   sealed trait AddUserReply
   final case class UsernameTaken(username: Username) extends AddUserReply with Serializable
   final case class UserAdded(user: User)             extends AddUserReply with Event
 
   final case class RemoveUser(username: Username, replyTo: ActorRef[RemoveUserReply])
-      extends Command
+      extends SerializableCommand
   sealed trait RemoveUserReply
   final case class UsernameUnknown(username: Username) extends RemoveUserReply with Serializable
   final case class UserRemoved(username: Username)     extends RemoveUserReply with Event
+
+  final case object Stop extends Command
 
   // Message protocol – end
 
@@ -89,6 +92,9 @@ object UserRepository extends Logging {
               replyTo ! userRemoved
             }
         }
+
+      case (_, _, Stop) =>
+        Effect.stop
     }
 
   private def eventHandler(state: State, event: Event) =

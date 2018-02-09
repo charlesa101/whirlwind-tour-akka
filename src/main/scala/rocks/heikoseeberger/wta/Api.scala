@@ -47,7 +47,7 @@ object Api extends Logging {
   final val Name = "api"
 
   def apply(config: Config,
-            userRepository: ActorRef[UserRepository.Command],
+            userRepository: ActorRef[UserRepository.SerializableCommand],
             userView: ActorRef[UserView.Command])(
       implicit mat: Materializer
   ): Behavior[Command] =
@@ -82,7 +82,7 @@ object Api extends Logging {
     }
 
   def route(
-      userRepository: ActorRef[UserRepository.Command],
+      userRepository: ActorRef[UserRepository.SerializableCommand],
       userView: ActorRef[UserView.Command]
   )(implicit askTimeout: Timeout, scheduler: Scheduler): Route = {
     import Directives._
