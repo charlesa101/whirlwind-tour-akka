@@ -19,6 +19,10 @@ package rocks.heikoseeberger.wta
 import akka.actor.{ Actor, ActorLogging, ActorSystem, Props, Terminated }
 import akka.actor.typed.SupervisorStrategy.restartWithBackoff
 import akka.actor.typed.scaladsl.Actor.supervise
+import akka.cluster.Cluster
+import akka.cluster.bootstrap.ClusterBootstrap
+import akka.cluster.http.management.ClusterHttpManagement
+import akka.cluster.typed.{ ClusterSingleton, ClusterSingletonSettings }
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
 import akka.persistence.query.PersistenceQuery
 import akka.stream.{ ActorMaterializer, Materializer }
@@ -33,7 +37,14 @@ object Main {
 
     private implicit val mat: Materializer = ActorMaterializer()
 
-    private val userRepository = context.spawn(UserRepository(), UserRepository.Name)
+    private val userRepository =
+      ClusterSingleton(context.system.toTyped).spawn(
+        UserRepository(),
+        UserRepository.Name,
+        akka.actor.typed.Props.empty,
+        ClusterSingletonSettings(context.system.toTyped),
+        UserRepository.Stop
+      )
 
     private val userView = context.spawn(UserView(), UserView.Name)
 
@@ -66,7 +77,8 @@ object Main {
     }
   }
 
-  final case class Config(userViewProjectionMinBackoff: FiniteDuration,
+  final case class Config(useClusterBootstrap: Boolean,
+                          userViewProjectionMinBackoff: FiniteDuration,
                           userViewProjectionMaxBackoff: FiniteDuration,
                           api: Api.Config,
                           userViewProjection: UserViewProjection.Config)
@@ -74,9 +86,15 @@ object Main {
   def main(args: Array[String]): Unit = {
     sys.props += "log4j2.contextSelector" -> classOf[AsyncLoggerContextSelector].getName
 
-    val config = loadConfigOrThrow[Config]("wta")
-    val system = ActorSystem("wta")
+    val config  = loadConfigOrThrow[Config]("wta")
+    val system  = ActorSystem("wta")
+    val cluster = Cluster(system)
 
-    system.actorOf(Props(new Root(config)), "root")
+    if (config.useClusterBootstrap) {
+      ClusterBootstrap(system).start()
+      ClusterHttpManagement(cluster).start()
+    }
+
+    cluster.registerOnMemberUp(system.actorOf(Props(new Root(config)), "root"))
   }
 }

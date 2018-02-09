@@ -84,7 +84,7 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
     'get - {
       val expectedUsers =
         UserView.Users(Set(User("username": User.Username, "nickname": User.Nickname)))
-      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.SerializableCommand])
       val userView = system.spawnAnonymous(Actor.immutablePartial[UserView.Command] {
         case (_, UserView.GetUsers(replyTo)) =>
           replyTo ! expectedUsers
@@ -100,7 +100,7 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
 
     'postInvalid - {
       val user           = parse("""{ "username": "", "nickname": "" }""")
-      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.Command])
+      val userRepository = system.spawnAnonymous(Actor.empty[UserRepository.SerializableCommand])
       val userView       = system.spawnAnonymous(Actor.empty[UserView.Command])
       Post("/", user) ~> route(userRepository, userView) ~> check {
         val actualRejections = rejections
@@ -111,7 +111,7 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
     'post - {
       val user = parse("""{ "username": "username", "nickname": "nickname" }""")
       val userRepository = system.spawnAnonymous {
-        Actor.immutablePartial[UserRepository.Command] {
+        Actor.immutablePartial[UserRepository.SerializableCommand] {
           case (_, UserRepository.AddUser(user, replyTo)) =>
             replyTo ! UserRepository.UserAdded(user)
             Actor.immutablePartial {
@@ -134,7 +134,7 @@ object ApiRouteTests extends TestSuite with RouteTest with TestFrameworkInterfac
 
     'delete - {
       val userRepository = system.spawnAnonymous {
-        Actor.immutablePartial[UserRepository.Command] {
+        Actor.immutablePartial[UserRepository.SerializableCommand] {
           case (_, UserRepository.RemoveUser(username, replyTo)) =>
             replyTo ! UserRepository.UserRemoved(username)
             Actor.immutablePartial {
