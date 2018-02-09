@@ -16,11 +16,10 @@
 
 package rocks.heikoseeberger.wta
 
-import akka.Done
 import akka.actor.typed.{ ActorRef, Behavior }
 import akka.actor.typed.scaladsl.Actor
-import cats.instances.string.catsKernelStdOrderForString
-import cats.syntax.eq.catsSyntaxEq
+import akka.cluster.ddata.ORSet
+import akka.cluster.ddata.typed.scaladsl.Replicator
 import org.apache.logging.log4j.scala.Logging
 
 object UserView extends Logging {
@@ -32,52 +31,29 @@ object UserView extends Logging {
   final case class GetUsers(replyTo: ActorRef[Users]) extends Command
   final case class Users(users: Set[User])
 
-  final case class GetLastSeqNo(replyTo: ActorRef[LastSeqNo]) extends Command
-  final case class LastSeqNo(nextSeqNo: Long)
-
-  final case class AddUser(user: User, seqNo: Long, replyTo: ActorRef[Done]) extends Command
-
-  final case class RemoveUser(username: User.Username, seqNo: Long, replyTo: ActorRef[Done])
-      extends Command
+  private final case class UsersChanged(users: Set[User]) extends Command
 
   // Message protocol – end
 
   final val Name = "user-view"
 
-  def apply(users: Set[User] = Set.empty, lastSeqNo: Long = 0): Behavior[Command] =
-    Actor.immutable {
-      case (_, GetUsers(replyTo)) =>
-        replyTo ! Users(users)
-        Actor.same
-
-      case (_, GetLastSeqNo(replyTo)) =>
-        replyTo ! LastSeqNo(lastSeqNo)
-        Actor.same
-
-      case (_, AddUser(user @ User(username, _), seqNo, replyTo)) =>
-        if (seqNo != lastSeqNo + 1) {
-          logger.error(s"Resetting, because seqNo $seqNo not successor of lastSeqNo $lastSeqNo!")
-          UserView()
-        } else {
-          logger.debug(s"User with username $username added")
-          replyTo ! Done
-          UserView(users + user, seqNo)
+  def apply(replicator: ActorRef[Replicator.Command],
+            users: Set[User] = Set.empty): Behavior[Command] =
+    Actor.deferred { context =>
+      val changedAdapter =
+        context.spawnAdapter { (changed: Replicator.Changed[ORSet[User]]) =>
+          UsersChanged(changed.dataValue.elements)
         }
 
-      case (_, RemoveUser(username, seqNo, replyTo)) =>
-        if (seqNo != lastSeqNo + 1) {
-          logger.error(s"Resetting, because seqNo $seqNo not successor of lastSeqNo $lastSeqNo!")
-          UserView()
-        } else {
-          logger.debug(s"User with username $username removed")
-          replyTo ! Done
-          UserView(users.filterNot(_.username.value === username.value), seqNo)
-        }
+      replicator ! Replicator.Subscribe(UserViewProjection.usersKey, changedAdapter)
+
+      Actor.immutable {
+        case (_, GetUsers(replyTo)) =>
+          replyTo ! Users(users)
+          Actor.same
+
+        case (_, UsersChanged(users)) =>
+          UserView(replicator, users)
+      }
     }
-
-  def addUser(user: User, seqNo: Long)(replyTo: ActorRef[Done]): AddUser =
-    AddUser(user, seqNo, replyTo)
-
-  def removeUser(username: User.Username, seqNo: Long)(replyTo: ActorRef[Done]): RemoveUser =
-    RemoveUser(username, seqNo, replyTo)
 }

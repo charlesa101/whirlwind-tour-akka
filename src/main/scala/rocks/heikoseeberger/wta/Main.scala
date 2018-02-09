@@ -22,6 +22,7 @@ import akka.actor.typed.{ ActorRef, Behavior, SupervisorStrategy, Terminated }
 import akka.actor.typed.scaladsl.Actor
 import akka.cluster.Cluster
 import akka.cluster.bootstrap.ClusterBootstrap
+import akka.cluster.ddata.typed.scaladsl.DistributedData
 import akka.cluster.http.management.ClusterHttpManagement
 import akka.cluster.typed.{ ClusterSingleton, ClusterSingletonSettings }
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
@@ -36,50 +37,6 @@ object Main extends Logging {
   import akka.actor.typed.scaladsl.adapter._
 
   private final case class TopLevelActorTerminated(actor: ActorRef[Nothing]) extends Reason
-
-//  final class Root(config: Config) extends Actor with ActorLogging {
-//    import akka.actor.typed.scaladsl.adapter._
-//
-//    private implicit val mat: Materializer = ActorMaterializer()
-//
-//    private val userRepository =
-//      ClusterSingleton(context.system.toTyped).spawn(
-//        UserRepository(),
-//        UserRepository.Name,
-//        akka.actor.typed.Props.empty,
-//        ClusterSingletonSettings(context.system.toTyped),
-//        UserRepository.Stop
-//      )
-//
-//    private val userView = context.spawn(UserView(), UserView.Name)
-//
-//    private val userProjection = {
-//      val readJournal =
-//        PersistenceQuery(context.system)
-//          .readJournalFor[CassandraReadJournal](CassandraReadJournal.Identifier)
-//      val userProjection =
-//        supervise(UserViewProjection(config.userViewProjection, readJournal, userView))
-//          .onFailure[UserViewProjection.EventStreamCompleteException](
-//            restartWithBackoff(config.userViewProjectionMinBackoff,
-//                               config.userViewProjectionMaxBackoff,
-//                               0)
-//          )
-//      context.spawn(userProjection, UserViewProjection.Name)
-//    }
-//
-//    private val api = context.spawn(Api(config.api, userRepository, userView), Api.Name)
-//
-//    context.watch(api)
-//    context.watch(userView)
-//    context.watch(userProjection)
-//    log.info(s"${context.system.name} up and running")
-//
-//    override def receive = {
-//      case Terminated(actor) =>
-//        log.error(s"Shutting down, because actor ${actor.path} terminated!")
-//        context.system.terminate()
-//    }
-//  }
 
   final case class Config(useClusterBootstrap: Boolean,
                           userViewProjectionMinBackoff: FiniteDuration,
@@ -118,30 +75,35 @@ object Main extends Logging {
       implicit mat: Materializer
   ): Behavior[Nothing] =
     Actor.deferred[Nothing] { context =>
-      val userRepository =
-        ClusterSingleton(context.system).spawn(
-          UserRepository(),
-          UserRepository.Name,
-          akka.actor.typed.Props.empty,
-          ClusterSingletonSettings(context.system),
-          UserRepository.Stop
-        )
+      val clusterSingletonSettings = ClusterSingletonSettings(context.system)
 
-      val userView = context.spawn(UserView(), UserView.Name)
+      val replicator = DistributedData(context.system).replicator
+
+      val userRepository =
+        ClusterSingleton(context.system).spawn(UserRepository(),
+                                               UserRepository.Name,
+                                               akka.actor.typed.Props.empty,
+                                               clusterSingletonSettings,
+                                               UserRepository.Stop)
+
+      val userView = context.spawn(UserView(replicator), UserView.Name)
       context.watch(userView)
 
-      val userProjection = {
-        val supervised =
-          Actor
-            .supervise(UserViewProjection(config.userViewProjection, readJournal, userView))
-            .onFailure[UserViewProjection.EventStreamCompleteException](
-              SupervisorStrategy.restartWithBackoff(config.userViewProjectionMinBackoff,
-                                                    config.userViewProjectionMaxBackoff,
-                                                    0)
-            )
-        context.spawn(supervised, UserViewProjection.Name)
-      }
-      context.watch(userProjection)
+      val supervisedUserViewProjection =
+        Actor
+          .supervise(
+            UserViewProjection(config.userViewProjection, readJournal, userView, replicator)
+          )
+          .onFailure[UserViewProjection.EventStreamCompleteException](
+            SupervisorStrategy.restartWithBackoff(config.userViewProjectionMinBackoff,
+                                                  config.userViewProjectionMaxBackoff,
+                                                  0)
+          )
+      ClusterSingleton(context.system).spawn(supervisedUserViewProjection,
+                                             UserViewProjection.Name,
+                                             akka.actor.typed.Props.empty,
+                                             clusterSingletonSettings,
+                                             UserViewProjection.Stop)
 
       val api = context.spawn(Api(config.api, userRepository, userView), Api.Name)
       context.watch(api)
