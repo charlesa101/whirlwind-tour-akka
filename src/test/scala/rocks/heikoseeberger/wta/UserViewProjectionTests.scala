@@ -19,6 +19,7 @@ package rocks.heikoseeberger.wta
 import akka.Done
 import akka.actor.Scheduler
 import akka.actor.typed.scaladsl.Actor
+import akka.cluster.ddata.typed.scaladsl.Replicator
 import akka.persistence.query.{ EventEnvelope, Offset }
 import akka.stream.{ ActorMaterializer, Materializer }
 import akka.stream.scaladsl.{ Sink, Source }
@@ -41,34 +42,26 @@ object UserViewProjectionTests extends ActorSystemTests {
       val user                  = User("username": User.Username, "nickname": User.Nickname)
       val username              = user.username
 
-      def eventsByPersistenceId(lastSeqNo: Long) =
+      val eventsByPersistenceId =
         Source(
           Vector(
+            EventEnvelope(Offset.noOffset, UserRepository.Name, 1, UserRepository.UserAdded(user)),
             EventEnvelope(Offset.noOffset,
                           UserRepository.Name,
-                          lastSeqNo + 1,
-                          UserRepository.UserAdded(user)),
-            EventEnvelope(Offset.noOffset,
-                          UserRepository.Name,
-                          lastSeqNo + 2,
+                          2,
                           UserRepository.UserRemoved(username))
           )
         )
 
-      val userView =
-        system.spawnAnonymous(Actor.immutablePartial[UserView.Command] {
-          case (_, UserView.AddUser(`user`, 43, replyTo)) =>
-            replyTo ! Done
-            Actor.same
-          case (_, UserView.RemoveUser(`username`, 44, replyTo)) =>
-            replyTo ! Done
+      val replicator =
+        system.spawnAnonymous(Actor.immutablePartial[Replicator.Command] {
+          case (_, Replicator.Update(_, _, replyTo, _)) =>
+            replyTo ! Replicator.UpdateSuccess(???, ???)
             Actor.same
         })
 
-      Source
-        .single(42)
-        .map(UserView.LastSeqNo(_))
-        .via(project(eventsByPersistenceId, userView))
+      eventsByPersistenceId
+        .via(project(???))
         .runWith(Sink.seq)
         .map { result =>
           val size = result.size

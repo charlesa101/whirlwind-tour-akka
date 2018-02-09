@@ -37,12 +37,14 @@ object Main {
 
     private implicit val mat: Materializer = ActorMaterializer()
 
+    private val clusterSingletonSettings = ClusterSingletonSettings(context.system.toTyped)
+
     private val userRepository =
       ClusterSingleton(context.system.toTyped).spawn(
         UserRepository(),
         UserRepository.Name,
         akka.actor.typed.Props.empty,
-        ClusterSingletonSettings(context.system.toTyped),
+        clusterSingletonSettings,
         UserRepository.Stop
       )
 
@@ -59,7 +61,11 @@ object Main {
                                config.userViewProjectionMaxBackoff,
                                0)
           )
-      context.spawn(userProjection, UserViewProjection.Name)
+      ClusterSingleton(context.system.toTyped).spawn(userProjection,
+                                                     UserViewProjection.Name,
+                                                     akka.actor.typed.Props.empty,
+                                                     clusterSingletonSettings,
+                                                     UserViewProjection.Stop)
     }
 
     private val api = context.spawn(Api(config.api, userRepository, userView), Api.Name)

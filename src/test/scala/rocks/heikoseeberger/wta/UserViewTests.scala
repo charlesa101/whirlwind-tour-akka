@@ -28,44 +28,31 @@ object UserViewTests extends ActorSystemTests {
 
   override def tests = Tests {
     'happyPath - {
-      val user     = User("username": User.Username, "nickname": User.Nickname)
-      val userView = system.spawnAnonymous(UserView())
-
-      val lastSeqNoProbe = TestProbe[LastSeqNo]()
-      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
-      lastSeqNoProbe.expectMsg(LastSeqNo(0))
-
-      val usersProbe = TestProbe[Users]()
-      userView ! GetUsers(usersProbe.ref)
-      usersProbe.expectMsg(Users(Set.empty))
-
-      val doneProbe = TestProbe[Done]()
-      userView ! AddUser(user, 1, doneProbe.ref)
-      doneProbe.expectMsg(Done)
-      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
-      lastSeqNoProbe.expectMsg(LastSeqNo(1))
-      userView ! GetUsers(usersProbe.ref)
-      usersProbe.expectMsg(Users(Set(user)))
-
-      userView ! RemoveUser("username": User.Username, 2, doneProbe.ref)
-      doneProbe.expectMsg(Done)
-      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
-      lastSeqNoProbe.expectMsg(LastSeqNo(2))
-      userView ! GetUsers(usersProbe.ref)
-      usersProbe.expectMsg(Users(Set.empty))
-    }
-
-    'illegalSeqNo - {
-      val user      = User("username": User.Username, "nickname": User.Nickname)
-      val userView  = system.spawnAnonymous(UserView())
-
-      val doneProbe = TestProbe[Done]()
-      userView ! AddUser(user, 42, doneProbe.ref)
-      doneProbe.expectNoMsg(100.milliseconds)
-
-      val lastSeqNoProbe = TestProbe[LastSeqNo]()
-      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
-      lastSeqNoProbe.expectMsg(LastSeqNo(0))
+//      val user     = User("username": User.Username, "nickname": User.Nickname)
+//      val userView = system.spawnAnonymous(UserView())
+//
+//      val lastSeqNoProbe = TestProbe[LastSeqNo]()
+//      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
+//      lastSeqNoProbe.expectMsg(LastSeqNo(0))
+//
+//      val usersProbe = TestProbe[Users]()
+//      userView ! GetUsers(usersProbe.ref)
+//      usersProbe.expectMsg(Users(Set.empty))
+//
+//      val doneProbe = TestProbe[Done]()
+//      userView ! AddUser(user, 1, doneProbe.ref)
+//      doneProbe.expectMsg(Done)
+//      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
+//      lastSeqNoProbe.expectMsg(LastSeqNo(1))
+//      userView ! GetUsers(usersProbe.ref)
+//      usersProbe.expectMsg(Users(Set(user)))
+//
+//      userView ! RemoveUser("username": User.Username, 2, doneProbe.ref)
+//      doneProbe.expectMsg(Done)
+//      userView ! GetLastSeqNo(lastSeqNoProbe.ref)
+//      lastSeqNoProbe.expectMsg(LastSeqNo(2))
+//      userView ! GetUsers(usersProbe.ref)
+//      usersProbe.expectMsg(Users(Set.empty))
     }
   }
 }

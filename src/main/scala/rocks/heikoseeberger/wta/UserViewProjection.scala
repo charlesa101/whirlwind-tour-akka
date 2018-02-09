@@ -16,22 +16,31 @@
 
 package rocks.heikoseeberger.wta
 
-import akka.{ Done, NotUsed }
 import akka.actor.Scheduler
-import akka.persistence.query.EventEnvelope
-import akka.persistence.query.scaladsl.EventsByPersistenceIdQuery
-import akka.stream.Materializer
-import akka.stream.scaladsl.{ Flow, Sink, Source }
 import akka.actor.typed.{ ActorRef, Behavior }
 import akka.actor.typed.scaladsl.Actor
 import akka.actor.typed.scaladsl.AskPattern.Askable
+import akka.cluster.Cluster
+import akka.cluster.ddata.{ ORSet, ORSetKey }
+import akka.cluster.ddata.Replicator.WriteLocal
+import akka.cluster.ddata.typed.scaladsl.{ DistributedData, Replicator }
+import akka.persistence.query.EventEnvelope
+import akka.persistence.query.scaladsl.EventsByPersistenceIdQuery
+import akka.stream.Materializer
+import akka.stream.scaladsl.{ Flow, Sink }
 import akka.util.Timeout
+import akka.{ Done, NotUsed }
+import cats.instances.string._
+import cats.syntax.eq._
 import org.apache.logging.log4j.scala.Logging
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.FiniteDuration
 
 object UserViewProjection extends Logging {
+  import akka.actor.typed.scaladsl.adapter._
 
   sealed trait Command
+  final case object Stop                              extends Command
   private final case object HandleEventStreamComplete extends Command
 
   abstract class EventStreamCompleteException
@@ -42,39 +51,49 @@ object UserViewProjection extends Logging {
 
   final val Name = "user-projection"
 
+  final val usersKey: ORSetKey[User] =
+    ORSetKey("users")
+
   def apply(config: Config,
             readJournal: EventsByPersistenceIdQuery,
             userView: ActorRef[UserView.Command])(implicit mat: Materializer): Behavior[Command] =
     Actor.deferred { context =>
-      def eventsByPersistenceId(lastSeqNo: Long) =
-        readJournal.eventsByPersistenceId(UserRepository.Name, lastSeqNo + 1, Long.MaxValue)
-
+      import context.executionContext
+      implicit val c: Cluster   = Cluster(context.system.toUntyped)
       implicit val t: Timeout   = config.askTimeout
       implicit val s: Scheduler = context.system.scheduler
-      val self                  = context.self
-      Source
-        .fromFuture(userView ? UserView.GetLastSeqNo)
-        .via(project(eventsByPersistenceId, userView))
+
+      val replicator = DistributedData(context.system).replicator
+      val self       = context.self
+
+      readJournal
+        .eventsByPersistenceId(UserRepository.Name, 0, Long.MaxValue)
+        .via(project(replicator))
         .runWith(Sink.onComplete(_ => self ! HandleEventStreamComplete))
 
       Actor.immutable {
         case (_, HandleEventStreamComplete) => throw EventStreamCompleteException
+        case (_, Stop)                      => Actor.stopped
       }
     }
 
   def project(
-      eventsByPersistenceId: Long => Source[EventEnvelope, NotUsed],
-      userView: ActorRef[UserView.Command]
-  )(implicit askTimeout: Timeout, scheduler: Scheduler): Flow[UserView.LastSeqNo, Done, NotUsed] =
-    Flow[UserView.LastSeqNo]
-      .flatMapConcat {
-        case UserView.LastSeqNo(lastSeqNo) => eventsByPersistenceId(lastSeqNo)
-      }
+      replicator: ActorRef[Replicator.Command]
+  )(implicit cluster: Cluster,
+    askTimeout: Timeout,
+    scheduler: Scheduler,
+    ec: ExecutionContext): Flow[EventEnvelope, Done, NotUsed] =
+    Flow[EventEnvelope]
       .collect {
-        case EventEnvelope(_, _, seqNo, event: UserRepository.Event) => (seqNo, event)
+        case EventEnvelope(_, _, _, event: UserRepository.Event) => event
       }
       .mapAsync(1) {
-        case (seqNo, UserRepository.UserAdded(user)) => userView ? UserView.addUser(user, seqNo)
-        case (seqNo, UserRepository.UserRemoved(un)) => userView ? UserView.removeUser(un, seqNo)
+        case UserRepository.UserAdded(user) =>
+          (replicator ? Replicator.Update(usersKey, ORSet.empty[User], WriteLocal)(_ + user))
+            .map(_ => Done)
+        case UserRepository.UserRemoved(username) =>
+          (replicator ? Replicator.Update(usersKey, ORSet.empty[User], WriteLocal) { users =>
+            users.elements.find(_.username.value === username.value).fold(users)(users - _)
+          }).map(_ => Done)
       }
 }
